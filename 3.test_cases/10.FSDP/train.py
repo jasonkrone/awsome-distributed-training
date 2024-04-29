@@ -169,7 +169,7 @@ def main(args):
 
     use_jpk_model = True
     if use_jpk_model:
-        config = Config.from_yaml("/home/ubuntu/jpt/configs/7b_fsdp/train_7b_fsdp_neox_memmap.yaml")
+        config = Config.from_yaml("/home/ubuntu/jpt/configs/train/7b_fsdp/train_7b_fsdp_neox_memmap.yaml")
         model = Decoder(config.model)
         transformer_layer = TransformerBlock
     else:
