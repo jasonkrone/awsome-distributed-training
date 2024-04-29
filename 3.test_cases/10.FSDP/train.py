@@ -45,6 +45,9 @@ from utils import Config
 
 logger = get_logger()
 
+USE_JPK_MODEL = True
+
+
 def eval_model(model, dataloader, num_batches):
     """Eval step."""
     model = model.eval()
@@ -56,7 +59,11 @@ def eval_model(model, dataloader, num_batches):
             if batch_idx >= num_batches:
                 break
 
-            loss += model(input_ids=input_data, attention_mask=None, labels=input_data)["loss"]
+            if USE_JPK_MODEL:
+                _, elem_loss = model(input_data, input_data)
+                loss += elem_loss
+            else:
+                loss += model(input_ids=input_data, attention_mask=None, labels=input_data)["loss"]
             n_batches += 1
 
     if n_batches > 0:
@@ -93,9 +100,11 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             step_start = time.time()
 
-            _, loss = model(input_data, input_data)
+            if USE_JPK_MODEL:
+                _, loss = model(input_data, input_data)
+            else:
+                loss = model(input_ids=input_data, attention_mask=None, labels=input_data)["loss"]
 
-            #loss = model(input_ids=input_data, attention_mask=None, labels=input_data)["loss"]
             loss.backward()
             model.clip_grad_norm_(args.grad_clip)
             optimizer.step()
@@ -167,8 +176,7 @@ def main(args):
             "Creating Model"
         )
 
-    use_jpk_model = True
-    if use_jpk_model:
+    if USE_JPK_MODEL:
         config = Config.from_yaml("/home/ubuntu/jpt/configs/train/7b_fsdp/train_7b_fsdp_neox_memmap.yaml")
         model = Decoder(config.model)
         transformer_layer = TransformerBlock
