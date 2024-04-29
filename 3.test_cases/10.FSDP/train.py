@@ -24,7 +24,7 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer
 from torch.utils.data import DataLoader
 
 from model_utils.concat_dataset import ConcatTokensDataset
-from model_utils.train_utils import (get_model_config, 
+from model_utils.train_utils import (get_model_config,
                                    compute_num_params,
                                    get_transformer_layer,
                                    get_sharding_strategy,
@@ -36,6 +36,12 @@ from model_utils.train_utils import (get_model_config,
                                    create_streaming_dataloader)
 from model_utils.checkpoint import save_checkpoint, load_checkpoint
 from model_utils.arguments import parse_args
+
+import sys
+sys.path.append("/home/ubuntu/jpt")
+from model import Decoder, TransformerBlock
+from utils import Config
+
 
 logger = get_logger()
 
@@ -86,7 +92,10 @@ def train(
                 continue
             optimizer.zero_grad(set_to_none=True)
             step_start = time.time()
-            loss = model(input_ids=input_data, attention_mask=None, labels=input_data)["loss"]
+
+            _, loss = model(input_data, input_data)
+
+            #loss = model(input_ids=input_data, attention_mask=None, labels=input_data)["loss"]
             loss.backward()
             model.clip_grad_norm_(args.grad_clip)
             optimizer.step()
@@ -94,13 +103,15 @@ def train(
             total_steps += 1
             loss_metric = loss.item()
             step_time = time.time() - step_start
-            sample_processed = input_data.shape[0] * world_size
-            throughput = sample_processed / step_time
+
+            tokens_processed = input_data.shape[0] * input_data.shape[1]
+            throughput = tokens_processed / step_time
+
             loss_scalar = loss.item()
             current_lr = lr_scheduler.get_lr()
-            if global_rank==0 and batch_idx%args.logging_freq==0:
+            if global_rank==0 and batch_idx % args.logging_freq==0:
                 logger.info(
-                    "Batch %d Loss: %.5f, Speed: %.2f samples/sec, lr: %.6f",  # pylint: disable=line-too-long
+                    "Batch %d Loss: %.5f, Speed: %.2f tokens/sec, lr: %.6f",  # pylint: disable=line-too-long
                     batch_idx,
                     loss_scalar,
                     throughput,
@@ -137,32 +148,39 @@ def train(
                 )
             if total_steps >= args.max_steps:
                 break
-            
+
 
 def main(args):
     dist.init_process_group()
     global_rank = dist.get_rank()
     device = global_rank % torch.cuda.device_count()
     world_size = dist.get_world_size()
-    
+
     if args.bf16:
         dtype = torch.bfloat16
     else:
         dtype = torch.get_default_dtype()
-    
+
     model_config = get_model_config(args)
     if global_rank == 0:
         logger.info(
             "Creating Model"
         )
-    model = AutoModelForCausalLM.from_config(model_config)
-    
+
+    use_jpk_model = True
+    if use_jpk_model:
+        config = Config.from_yaml("/home/ubuntu/jpt/configs/7b_fsdp/train_7b_fsdp_neox_memmap.yaml")
+        model = Decoder(config.model)
+        transformer_layer = TransformerBlock
+    else:
+        model = AutoModelForCausalLM.from_config(model_config)
+        transformer_layer = get_transformer_layer(args.model_type)
+
     num_params = compute_num_params(model)
     if global_rank == 0:
         logger.info(
             "Created model with total parameters: %d (%.2f B)", num_params, num_params * 1e-9
         )
-    transformer_layer = get_transformer_layer(args.model_type)
 
     gpt_auto_wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
@@ -222,37 +240,37 @@ def main(args):
             lr_scheduler,
             total_steps,
             start_batch_index,
-        ) = load_checkpoint(model, 
-                            optimizer, 
-                            lr_scheduler, 
-                            args.resume_from_checkpoint, 
+        ) = load_checkpoint(model,
+                            optimizer,
+                            lr_scheduler,
+                            args.resume_from_checkpoint,
                             args.model_type,
                             device)
     else:
         total_steps = 0
         start_batch_index = 0
-    
-    train_dataloader = create_streaming_dataloader(args.dataset, 
-                                                   args.tokenizer, 
-                                                   name=args.dataset_config_name, 
-                                                   batch_size=args.train_batch_size, 
+
+    train_dataloader = create_streaming_dataloader(args.dataset,
+                                                   args.tokenizer,
+                                                   name=args.dataset_config_name,
+                                                   batch_size=args.train_batch_size,
                                                    split='train')
-    
-    val_dataloader = create_streaming_dataloader(args.dataset, 
-                                                  args.tokenizer, 
-                                                  name=args.dataset_config_name, 
-                                                  batch_size=args.train_batch_size, 
+
+    val_dataloader = create_streaming_dataloader(args.dataset,
+                                                  args.tokenizer,
+                                                  name=args.dataset_config_name,
+                                                  batch_size=args.train_batch_size,
                                                   split='validation')
-    
-    train(model, 
-          optimizer, 
+
+    train(model,
+          optimizer,
           train_dataloader,
           val_dataloader,
-          lr_scheduler, 
-          model_config, 
-          num_params, 
-          args, 
-          global_rank, 
+          lr_scheduler,
+          model_config,
+          num_params,
+          args,
+          global_rank,
           world_size,
           total_steps,
           start_batch_index)
