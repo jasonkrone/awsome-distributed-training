@@ -45,7 +45,7 @@ from utils import Config
 
 logger = get_logger()
 
-USE_JPK_MODEL = True
+USE_JPK_MODEL = False
 
 
 def eval_model(model, dataloader, num_batches):
